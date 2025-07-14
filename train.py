@@ -3,21 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from model_pointnet import Pointnet_cls
 import Model
 from dataloader import Modelnet40_data, Shapenet_data, Scannet_data_h5
 from torch.autograd import Variable
 import time
-import numpy as np
 import os
 import argparse
-import pdb
 import mmd
 # from utils import *
 import math
 import warnings
-
-from tensorboardX import SummaryWriter
 
 warnings.filterwarnings("ignore")
 
@@ -32,13 +27,12 @@ parser.add_argument('-models', '-m', type=str, help='alignment model', default='
 parser.add_argument('-lr',type=float, help='learning rate', default=0.0001)
 parser.add_argument('-scaler',type=float, help='scaler of learning rate', default=1.)
 parser.add_argument('-weight',type=float, help='weight of src loss', default=1.)
-parser.add_argument('-datadir',type=str, help='directory of data', default='./dataset/')
-parser.add_argument('-tb_log_dir', type=str, help='directory of tb', default='./logs')
+parser.add_argument('-datadir',type=str, help='directory of data', default='./PointDA_data/')
+parser.add_argument('-tb_log_dir', type=str, help='directory of tb', default='./')
 args = parser.parse_args()
 
 if not os.path.exists(os.path.join(os.getcwd(), args.tb_log_dir)):
     os.makedirs(os.path.join(os.getcwd(), args.tb_log_dir))
-writer = SummaryWriter(log_dir=args.tb_log_dir)
 
 device = 'cuda'
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -116,7 +110,6 @@ def main():
                 lr = args.lr * args.scaler * (0.5 ** (epoch // 10))
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
-            writer.add_scalar('lr_dis', lr, epoch)
 
     def discrepancy(out1, out2):
         """discrepancy loss"""
@@ -137,9 +130,6 @@ def main():
         lr_schedule_g.step(epoch=epoch)
         lr_schedule_c.step(epoch=epoch)
         adjust_learning_rate(optimizer_dis, epoch)
-
-        writer.add_scalar('lr_g', lr_schedule_g.get_lr()[0], epoch)
-        writer.add_scalar('lr_c', lr_schedule_c.get_lr()[0], epoch)
 
         model.train()
 
@@ -240,7 +230,6 @@ def main():
             print ('Target 1:{} [overall_acc: {:.4f} \t loss: {:.4f} \t Best Target Acc: {:.4f}]'.format(
             epoch, pred_acc, pred_loss, best_target_test_acc
             ))
-            writer.add_scalar('accs/target_test_acc', pred_acc, epoch)
 
 
         time_pass_e = time.time() - since_e
@@ -253,5 +242,5 @@ if __name__ == '__main__':
     since = time.time()
     main()
     time_pass = since - time.time()
-    print('Training complete in {:.0f}m {:.0f}s'.format(time_pass // 60, time_pass % 60))
+    print('Training complete in {:.0f}h'.format(time_pass / 3600))
 
