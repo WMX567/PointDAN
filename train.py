@@ -199,10 +199,6 @@ def main():
                 loss_adv_total/data_total,  loss_node_total/data_total,  cons
                 ))
 
-        time_end = time.time()
-        print("Epoch time: %.5f hours" % ((time_end - time_start) / 3600))
-
-
         # Testing
 
         with torch.no_grad():
@@ -235,11 +231,9 @@ def main():
             epoch, pred_acc, pred_loss, best_target_test_acc
             ))
 
+            time_end = time.time()
+            print("Epoch time: %.5f hours" % ((time_end - time_start) / 3600))
 
-        time_pass_e = time.time() - since_e
-        print('The {} epoch takes {:.0f}m {:.0f}s'.format(epoch, time_pass_e // 60, time_pass_e % 60))
-        print(args)
-        print(' ')
 
 
 if __name__ == '__main__':
