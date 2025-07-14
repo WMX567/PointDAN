@@ -27,7 +27,7 @@ parser.add_argument('-models', '-m', type=str, help='alignment model', default='
 parser.add_argument('-lr',type=float, help='learning rate', default=0.0001)
 parser.add_argument('-scaler',type=float, help='scaler of learning rate', default=1.)
 parser.add_argument('-weight',type=float, help='weight of src loss', default=1.)
-parser.add_argument('-datadir',type=str, help='directory of data', default='./PointDA_data/')
+parser.add_argument('-datadir',type=str, help='directory of data', default='./')
 parser.add_argument('-tb_log_dir', type=str, help='directory of tb', default='./')
 args = parser.parse_args()
 
