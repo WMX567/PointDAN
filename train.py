@@ -13,6 +13,7 @@ import mmd
 # from utils import *
 import math
 import warnings
+import time
 
 warnings.filterwarnings("ignore")
 
@@ -124,7 +125,7 @@ def main():
     best_target_test_acc = 0
 
     for epoch in range(max_epoch):
-        since_e = time.time()
+        time_start = time.time()
             
         lr_schedule_g.step(epoch=epoch)
         lr_schedule_c.step(epoch=epoch)
@@ -197,6 +198,10 @@ def main():
                 epoch, data_total, data_t_total,num_source_train, loss_total/data_total, 
                 loss_adv_total/data_total,  loss_node_total/data_total,  cons
                 ))
+
+        time_end = time.time()
+        print("Epoch time: %.5f hours" % ((time_end - time_start) / 3600))
+
 
         # Testing
 
