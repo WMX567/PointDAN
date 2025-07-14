@@ -34,8 +34,7 @@ args = parser.parse_args()
 if not os.path.exists(os.path.join(os.getcwd(), args.tb_log_dir)):
     os.makedirs(os.path.join(os.getcwd(), args.tb_log_dir))
 
-device = 'cuda'
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BATCH_SIZE = args.batchsize * len(args.gpu.split(','))
 LR = args.lr

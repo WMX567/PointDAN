@@ -26,17 +26,17 @@ class CALayer(nn.Module):
 
 # Grad Reversal
 class GradReverse(torch.autograd.Function):
-    def __init__(self, lambd):
-        self.lambd = lambd
-
-    def forward(self, x):
+    @staticmethod
+    def forward(ctx, x, lambd):
+        ctx.lambd = lambd
         return x.view_as(x)
 
-    def backward(self, grad_output):
-        return (grad_output * -self.lambd)
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.neg() * ctx.lambd, None
 
-def grad_reverse(x, lambd=1.0):
-    return GradReverse(lambd)(x)
+def grad_reverse(x, lambd):
+    return GradReverse.apply(x, lambd)
 
 # Generator
 class Pointnet_g(nn.Module):

@@ -81,7 +81,8 @@ class transform_net(nn.Module):
         x = self.fc3(x)
 
         iden = torch.eye(self.K).view(1,self.K * self. K).repeat(x.size(0),1)
-        iden = iden.to(device='cuda') 
+        device = x.device
+        iden = iden.to(device) 
         x = x + iden
         x = x.view(x.size(0), self.K, self.K)
         return x
