@@ -194,7 +194,7 @@ class transform_net(nn.Module):
 
 
 class DGCNN(nn.Module):
-    
+
     def __init__(self):
         super(DGCNN, self).__init__()
         self.k = 20
@@ -278,7 +278,6 @@ class Net_MDA(nn.Module):
             self.c2 = classifier()
             
     def forward(self, x, constant=1, adaptation=False, node_vis=False, mid_feat=False, node_adaptation_s=False, node_adaptation_t=False):
-        print(x.size())
         x = x.squeeze(-1)  # [B, 3, N] -> [B, N, 3]
         x, feat_ori, node_idx = self.g(x, node=True)
         batch_size = feat_ori.size(0)

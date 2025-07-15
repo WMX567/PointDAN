@@ -1,0 +1,7 @@
+15-07-25 11:29:00: Namespace(source='modelnet', target='scannet', batchsize=16, gpu='0', epochs=200, models='MDA', lr=0.0001, scaler=1.0, weight=0.5, datadir='./', tb_log_dir='./logs/sa_m2ss')
+15-07-25 11:29:00: number of train examples in modelnet : 4183
+15-07-25 11:29:00: Occurrences count of classes in modelnet train set: {np.int64(0): np.int64(106), np.int64(1): np.int64(515), np.int64(2): np.int64(572), np.int64(3): np.int64(200), np.int64(4): np.int64(889), np.int64(5): np.int64(124), np.int64(6): np.int64(465), np.int64(7): np.int64(240), np.int64(8): np.int64(680), np.int64(9): np.int64(392)}
+15-07-25 11:29:00: number of train examples in scannet: 6110
+15-07-25 11:29:00: Occurrences count of classes in scannet train set: {np.int64(0): np.int64(98), np.int64(1): np.int64(329), np.int64(2): np.int64(464), np.int64(3): np.int64(650), np.int64(4): np.int64(2578), np.int64(5): np.int64(161), np.int64(6): np.int64(210), np.int64(7): np.int64(88), np.int64(8): np.int64(495), np.int64(9): np.int64(1037)}
+15-07-25 11:29:00: number of test examples in scannet: 1769
+15-07-25 11:29:00: Occurrences count of classes in scannet test set: {np.int64(0): np.int64(26), np.int64(1): np.int64(85), np.int64(2): np.int64(146), np.int64(3): np.int64(149), np.int64(4): np.int64(801), np.int64(5): np.int64(41), np.int64(6): np.int64(61), np.int64(7): np.int64(25), np.int64(8): np.int64(134), np.int64(9): np.int64(301)}

@@ -1,185 +1,347 @@
-import torch
-import torch.utils.data as data
 import os
-import sys
+import glob
 import h5py
 import numpy as np
-import glob
-import random
-from data_utils import *
+from torch.utils.data import Dataset
+from pc_utils import (farthest_point_sample_curv, farthest_point_sample_np, scale_to_unit_cube, jitter_pointcloud,
+                            rotate_shape, random_rotate_one_axis)
+eps = 10e-4
+NUM_POINTS = 1024
+idx_to_label = {0: "bathtub", 1: "bed", 2: "bookshelf", 3: "cabinet",
+                4: "chair", 5: "lamp", 6: "monitor",
+                7: "plant", 8: "sofa", 9: "table"}
+label_to_idx = {"bathtub": 0, "bed": 1, "bookshelf": 2, "cabinet": 3,
+                "chair": 4, "lamp": 5, "monitor": 6,
+                "plant": 7, "sofa": 8, "table": 9}
 
+def load_data_h5py_scannet10(partition, dataroot):
+    """
+    Input:
+        partition - train/test
+    Return:
+        data,label arrays
+    """
 
-def load_dir(data_dir, name='train_files.txt'):
-    with open(os.path.join(data_dir,name),'r') as f:
-        lines = f.readlines()
-    return [os.path.join(data_dir, line.rstrip().split('/')[-1]) for line in lines]
-
-
-def get_info(shapes_dir, isView=False):
-    names_dict = {}
-    if isView:
-        for shape_dir in shapes_dir:
-            name = '_'.join(os.path.split(shape_dir)[1].split('.')[0].split('_')[:-1])
-            if name in names_dict:
-                names_dict[name].append(shape_dir)
-            else:
-                names_dict[name] = [shape_dir]
+    all_data = []
+    all_label = []
+    if partition == 'train':
+        h5_names = [dataroot + '/PointDA_data/scannet/train_0.h5', 
+                    dataroot + '/PointDA_data/scannet/train_1.h5', 
+                    dataroot + '/PointDA_data/scannet/train_2.h5']
     else:
-        for shape_dir in shapes_dir:
-            name = os.path.split(shape_dir)[1].split('.')[0]
-            names_dict[name] = shape_dir
+        h5_names = [dataroot + '/PointDA_data/scannet/test_0.h5']
 
-    return names_dict
+    for h5_name in sorted(h5_names):
+        f = h5py.File(h5_name, 'r')
+        data = f['data'][:]
+        label = f['label'][:]
+        f.close()
+        all_data.append(data)
+        all_label.append(label)
+    all_data = np.concatenate(all_data, axis=0)
+    all_label = np.concatenate(all_label, axis=0)
+    return np.array(all_data).astype('float32'), np.array(all_label).astype('int64')
 
+class ScanNet(Dataset):
+    """
+    scannet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
+        # read data
+        self.data, self.label = load_data_h5py_scannet10(self.partition, dataroot)
+        self.num_examples = self.data.shape[0]
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
+        io.cprint("number of " + partition + " examples in scannet" + ": " + str(self.data.shape[0]))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in scannet " + partition + " set: " + str(dict(zip(unique, counts))))
 
-class Modelnet40_data(data.Dataset):
-    def __init__(self, pc_root, status='train', pc_input_num=1024, aug=True):
-        super(Modelnet40_data, self).__init__()
+    def __getitem__(self, item):
+        pointcloud = np.copy(self.data[item])[:, :3]
+        norm_curv = np.copy(self.data[item])[:, 3:].astype(np.float32)
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # Rotate ScanNet by -90 degrees
+        pointcloud = self.rotate_pc(pointcloud)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            norm_curv = np.swapaxes(np.expand_dims(norm_curv, 0), 1, 2)
+            _, pointcloud, norm_curv = farthest_point_sample_curv(pointcloud, norm_curv, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+            norm_curv = np.swapaxes(norm_curv.squeeze(), 1, 0).astype('float32')
 
-        self.status = status
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+
+        return (pointcloud, label, norm_curv[:,-1])
+
+    def __len__(self):
+        return self.data.shape[0]
+    
+    # scannet is rotated such that the up direction is the y axis
+    def rotate_pc(self, pointcloud):
+        pointcloud = rotate_shape(pointcloud, 'x', -np.pi / 2)
+        return pointcloud
+
+class ModelNet(Dataset):
+    """
+    modelnet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
         self.pc_list = []
         self.lbl_list = []
-        self.pc_input_num = pc_input_num
-        self.aug = aug
-
-        categorys = glob.glob(os.path.join(pc_root, '*'))
-        categorys = [c.split(os.path.sep)[-1] for c in categorys]
-        # sorted(categorys)
-        categorys = sorted(categorys)
-
-        if status == 'train':
-            npy_list = glob.glob(os.path.join(pc_root, '*', 'train', '*.npy'))
-        else:
-            npy_list = glob.glob(os.path.join(pc_root, '*', 'test', '*.npy'))
-        # names_dict = get_info(npy_list, isView=False)
-
+        DATA_DIR = os.path.join(dataroot, "PointDA_data", "modelnet")
+        npy_list = sorted(glob.glob(os.path.join(DATA_DIR, '*', partition, '*.npy')))
         for _dir in npy_list:
             self.pc_list.append(_dir)
-            self.lbl_list.append(categorys.index(_dir.split('/')[-3]))
+            self.lbl_list.append(label_to_idx[_dir.split('/')[-3]])
+        self.label = np.asarray(self.lbl_list)
+        self.num_examples = len(self.pc_list)
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
+        io.cprint("number of " + partition + " examples in modelnet : " + str(len(self.pc_list)))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in modelnet " + partition + " set: " + str(dict(zip(unique, counts))))
 
-        print(f'{status} data num: {len(self.pc_list)}')
+    def __getitem__(self, item):
+        pointcloud = np.load(self.pc_list[item])[:, :3].astype(np.float32)
+        norm_curv = np.load(self.pc_list[item])[:, 3:].astype(np.float32)
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            norm_curv = np.swapaxes(np.expand_dims(norm_curv, 0), 1, 2)
+            _, pointcloud, norm_curv = farthest_point_sample_curv(pointcloud, norm_curv, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+            norm_curv = np.swapaxes(norm_curv.squeeze(), 1, 0).astype('float32')
 
-    def __getitem__(self, idx):
-        lbl = self.lbl_list[idx]
-        pc = np.load(self.pc_list[idx])[:self.pc_input_num].astype(np.float32)
-        pc = normal_pc(pc)
-        if self.aug:
-            pc = rotation_point_cloud(pc)
-            pc = jitter_point_cloud(pc)
-        # print(pc.shape)
-        pc = np.expand_dims(pc.transpose(), axis=2)
-        return torch.from_numpy(pc).type(torch.FloatTensor), lbl
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+        return (pointcloud, label, norm_curv[:,-1])
+
 
     def __len__(self):
         return len(self.pc_list)
 
-
-class Shapenet_data(data.Dataset):
-    def __init__(self, pc_root, status='train', pc_input_num=1024, aug=True, data_type='*.npy'):
-        super(Shapenet_data, self).__init__()
-
-        self.status = status
+class ShapeNet(Dataset):
+    """
+    Sahpenet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
         self.pc_list = []
         self.lbl_list = []
-        self.pc_input_num = pc_input_num
-        self.aug = aug
-        self.data_type = data_type
-
-        categorys = glob.glob(os.path.join(pc_root, '*'))
-        categorys = [c.split(os.path.sep)[-1] for c in categorys]
-        # sorted(categorys)
-        categorys = sorted(categorys)
-
-        if status == 'train':
-            pts_list = glob.glob(os.path.join(pc_root, '*', 'train', self.data_type))
-        elif status == 'test':
-            pts_list = glob.glob(os.path.join(pc_root, '*', 'test', self.data_type))
-        else:
-            pts_list = glob.glob(os.path.join(pc_root, '*', 'validation', self.data_type))
-        # names_dict = get_info(pts_list, isView=False)
-
-        for _dir in pts_list:
+        DATA_DIR = os.path.join(dataroot, "PointDA_data", "shapenet")
+        npy_list = sorted(glob.glob(os.path.join(DATA_DIR, '*', partition, '*.npy')))
+        for _dir in npy_list:
             self.pc_list.append(_dir)
-            self.lbl_list.append(categorys.index(_dir.split('/')[-3]))
+            self.lbl_list.append(label_to_idx[_dir.split('/')[-3]])
+        self.label = np.asarray(self.lbl_list)
+        self.num_examples = len(self.pc_list)
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
+        io.cprint("number of " + partition + " examples in shapenet: " + str(len(self.pc_list)))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in shapenet " + partition + " set: " + str(dict(zip(unique, counts))))
 
-        print(f'{status} data num: {len(self.pc_list)}')
+    def __getitem__(self, item):
+        pointcloud = np.load(self.pc_list[item])[:, :3].astype(np.float32)
+        norm_curv = np.load(self.pc_list[item])[:, 3:].astype(np.float32)
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # Rotate ShapeNet by -90 degrees
+        pointcloud = self.rotate_pc(pointcloud, label)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            norm_curv = np.swapaxes(np.expand_dims(norm_curv, 0), 1, 2)
+            _, pointcloud, norm_curv = farthest_point_sample_curv(pointcloud, norm_curv, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+            norm_curv = np.swapaxes(norm_curv.squeeze(), 1, 0).astype('float32')
 
-    def __getitem__(self, idx):
-        lbl = self.lbl_list[idx]
-        if self.data_type == '*.pts':
-            pc = np.array([[float(value) for value in xyz.split(' ')]
-                           for xyz in open(self.pc_list[idx], 'r') if len(xyz.split(' ')) == 3])[:self.pc_input_num, :]
-        elif self.data_type == '*.npy':
-            pc = np.load(self.pc_list[idx])[:self.pc_input_num].astype(np.float32)
-        pc = normal_pc(pc)
-        if self.aug:
-            pc = rotation_point_cloud(pc)
-            pc = jitter_point_cloud(pc)
-        pad_pc = np.zeros(shape=(self.pc_input_num-pc.shape[0], 3), dtype=float)
-        pc = np.concatenate((pc, pad_pc), axis=0)
-        pc = np.expand_dims(pc.transpose(), axis=2)
-        return torch.from_numpy(pc).type(torch.FloatTensor), lbl
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+        return (pointcloud, label, norm_curv[:,-1])
 
     def __len__(self):
         return len(self.pc_list)
+    
+    # shpenet is rotated such that the up direction is the y axis in all shapes except plant
+    def rotate_pc(self, pointcloud, label):
+        if label.item(0) != label_to_idx["plant"]:
+            pointcloud = rotate_shape(pointcloud, 'x', -np.pi / 2)
+        return pointcloud
 
-class Scannet_data_h5(data.Dataset):
 
-    def __init__(self, pc_root, status='train', pc_input_num=1024, aug=True):
-        super(Scannet_data_h5, self).__init__()
-        self.num_points = pc_input_num
-        self.status = status
-        self.aug = aug
-        # self.label_map = [2, 3, 4, 5, 6, 7, 9, 10, 14, 16]
+class ScanNet_Test(Dataset):
+    """
+    scannet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
 
-        if self.status == 'train':
-            data_pth = load_dir(pc_root, name='train_files.txt')
-        else:
-            data_pth = load_dir(pc_root, name='test_files.txt')
+        # read data
+        self.data, self.label = load_data_h5py_scannet10(self.partition, dataroot)
+        self.num_examples = self.data.shape[0]
 
-        point_list = []
-        label_list = []
-        for pth in data_pth:
-            data_file = h5py.File(pth, 'r')
-            point = data_file['data'][:]
-            label = data_file['label'][:]
-            
-            # idx = [index for index, value in enumerate(list(label)) if value in self.label_map]
-            # point_new = point[idx]
-            # label_new = np.array([self.label_map.index(value) for value in label[idx]])
-            
-            point_list.append(point)
-            label_list.append(label)
-        self.data = np.concatenate(point_list, axis=0)
-        self.label = np.concatenate(label_list, axis=0)
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
 
-    def __getitem__(self, idx):
-        point_idx = np.arange(0, self.num_points)
-        np.random.shuffle(point_idx)
-        point = self.data[idx][point_idx][:, :3]
-        label = self.label[idx]
+        io.cprint("number of " + partition + " examples in scannet" + ": " + str(self.data.shape[0]))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in scannet " + partition + " set: " + str(dict(zip(unique, counts))))
 
-        pc = normal_pc(point)
-        if self.aug:
-            pc = rotation_point_cloud(pc)
-            pc = jitter_point_cloud(pc)
-        # print(pc.shape)
-        pc = np.expand_dims(pc.transpose(), axis=2)
-        return torch.from_numpy(pc).type(torch.FloatTensor), label
+    def __getitem__(self, item):
+        pointcloud = np.copy(self.data[item])[:, :3]
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # Rotate ScanNet by -90 degrees
+        pointcloud = self.rotate_pc(pointcloud)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            _, pointcloud = farthest_point_sample_np(pointcloud, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+
+        return (pointcloud, label)
+
     def __len__(self):
         return self.data.shape[0]
 
-
-if __name__ == "__main__":
-    # data = Modelnet40_data(num_points=1024,train=False)
-    data = Shapenet_data(pc_root='/home/youhaoxuan/data/Modelnet_Shapenet/shapenet', status='validate')
-    # data = Modelnet40_data(pc_root='/home/youhaoxuan/data/Modelnet_Shapenet/modelnet40', status='train')
-    print (len(data))
-    point, label = data[0]
-    print (point.shape, label)
-    
+    # scannet is rotated such that the up direction is the y axis
+    def rotate_pc(self, pointcloud):
+        pointcloud = rotate_shape(pointcloud, 'x', -np.pi / 2)
+        return pointcloud
 
 
+class ModelNet_Test(Dataset):
+    """
+    modelnet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
+        self.pc_list = []
+        self.lbl_list = []
+        DATA_DIR = os.path.join(dataroot, "PointDA_data", "modelnet")
+
+        npy_list = sorted(glob.glob(os.path.join(DATA_DIR, '*', partition, '*.npy')))
+
+        for _dir in npy_list:
+            self.pc_list.append(_dir)
+            self.lbl_list.append(label_to_idx[_dir.split('/')[-3]])
+
+        self.label = np.asarray(self.lbl_list)
+        self.num_examples = len(self.pc_list)
+
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
+
+        io.cprint("number of " + partition + " examples in modelnet : " + str(len(self.pc_list)))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in modelnet " + partition + " set: " + str(dict(zip(unique, counts))))
+
+    def __getitem__(self, item):
+        pointcloud = np.load(self.pc_list[item])[:, :3].astype(np.float32)
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            _, pointcloud = farthest_point_sample_np(pointcloud, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+        return (pointcloud, label)
+
+    def __len__(self):
+        return len(self.pc_list)
 
 
+class ShapeNet_Test(Dataset):
+    """
+    Sahpenet dataset for pytorch dataloader
+    """
+    def __init__(self, io, dataroot, partition='train'):
+        self.partition = partition
+        self.pc_list = []
+        self.lbl_list = []
+        DATA_DIR = os.path.join(dataroot, "PointDA_data", "shapenet")
 
+        npy_list = sorted(glob.glob(os.path.join(DATA_DIR, '*', partition, '*.npy')))
+
+        for _dir in npy_list:
+            self.pc_list.append(_dir)
+            self.lbl_list.append(label_to_idx[_dir.split('/')[-3]])
+
+        self.label = np.asarray(self.lbl_list)
+        self.num_examples = len(self.pc_list)
+
+        # split train to train part and validation part
+        if partition == "train":
+            self.train_ind = np.asarray([i for i in range(self.num_examples) if i % 10 < 8]).astype(int)
+            np.random.shuffle(self.train_ind)
+            self.val_ind = np.asarray([i for i in range(self.num_examples) if i % 10 >= 8]).astype(int)
+            np.random.shuffle(self.val_ind)
+
+        io.cprint("number of " + partition + " examples in shapenet: " + str(len(self.pc_list)))
+        unique, counts = np.unique(self.label, return_counts=True)
+        io.cprint("Occurrences count of classes in shapenet " + partition + " set: " + str(dict(zip(unique, counts))))
+
+    def __getitem__(self, item):
+        pointcloud = np.load(self.pc_list[item])[:, :3].astype(np.float32)
+        label = np.copy(self.label[item])
+        pointcloud = scale_to_unit_cube(pointcloud)
+        # Rotate ShapeNet by -90 degrees
+        pointcloud = self.rotate_pc(pointcloud, label)
+        # sample according to farthest point sampling
+        if pointcloud.shape[0] > NUM_POINTS:
+            pointcloud = np.swapaxes(np.expand_dims(pointcloud, 0), 1, 2)
+            _, pointcloud = farthest_point_sample_np(pointcloud, NUM_POINTS)
+            pointcloud = np.swapaxes(pointcloud.squeeze(), 1, 0).astype('float32')
+
+        # apply data rotation and augmentation on train samples
+        if self.partition == 'train' and item not in self.val_ind:
+            pointcloud = jitter_pointcloud(random_rotate_one_axis(pointcloud, "z"))
+        return (pointcloud, label)
+
+    def __len__(self):
+        return len(self.pc_list)
+
+    # shpenet is rotated such that the up direction is the y axis in all shapes except plant
+    def rotate_pc(self, pointcloud, label):
+        if label.item(0) != label_to_idx["plant"]:
+            pointcloud = rotate_shape(pointcloud, 'x', -np.pi / 2)
+        return pointcloud
