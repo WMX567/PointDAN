@@ -16,7 +16,7 @@ import warnings
 import log
 import time
 
-NWORKERS = 0
+NWORKERS = 4
 # ==================
 # init
 # ==================
