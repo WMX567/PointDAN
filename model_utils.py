@@ -103,27 +103,19 @@ class adapt_layer_off(nn.Module):
     def forward(self, input_fea, input_loc):
         # Initialize node
         fpoint_idx = point_utils.farthest_point_sample(input_loc, self.num_node)  # (B, num_node)
-        fpoint_loc = point_utils.index_points(input_loc, fpoint_idx)  # (B, 3, num_node)
-        fpoint_fea = point_utils.index_points(input_fea, fpoint_idx)  # (B, C, num_node)
-        group_idx = point_utils.query_ball_point(0.3, 64, input_loc, fpoint_loc)   # (B, num_node, 64)
-        group_fea = point_utils.index_points(input_fea, group_idx)  # (B, C, num_node, 64)
-        group_fea = group_fea - fpoint_fea.unsqueeze(3).expand(-1, -1, -1, self.num_node)
+        fpoint_loc = point_utils.index_points(input_loc, fpoint_idx)              # (B, 3, num_node)
+        fpoint_fea = point_utils.index_points(input_fea, fpoint_idx)              # (B, C, num_node)
 
-        # Learn node offset
+        group_idx = point_utils.query_ball_point(0.3, 64, input_loc, fpoint_loc)  # (B, num_node, 64)
+        group_fea = point_utils.index_points(input_fea, group_idx)                # (B, C, num_node, 64)
+        group_fea = self.trans(group_fea)                                         # ✅ reduce C to trans_dim_out (e.g., 64)
+
         seman_trans = self.pred_offset(group_fea)  # (B, 3, num_node, 64)
-        group_loc = point_utils.index_points(input_loc, group_idx)   # (B, 3, num_node, 64)
-        group_loc = group_loc - fpoint_loc.unsqueeze(3).expand(-1, -1, -1, self.num_node)
-        node_offset = (seman_trans*group_loc).mean(dim=-1)
+        seman_trans = seman_trans.permute(0, 2, 3, 1)  # (B, num_node, 64, 3)
 
-        # Update node and get node feature
-        node_loc = fpoint_loc+node_offset.squeeze(-1)  # (B,3,num_node)
-        group_idx = point_utils.query_ball_point(None, 64, input_loc, node_loc)
-        residual_fea = self.residual(input_fea)
-        group_fea = point_utils.index_points(residual_fea, group_idx)
-        node_fea, _ = torch.max(group_fea, dim=-1, keepdim=True)
+        fpoint_loc_trans = fpoint_loc.permute(0, 2, 1).unsqueeze(2) + seman_trans  # (B, num_node, 1, 3) + (B, num_node, 64, 3)
+        fpoint_loc_trans = fpoint_loc_trans.permute(0, 3, 1, 2)  # (B, 3, num_node, 64)
+        node_fea = self.residual(fpoint_fea.unsqueeze(-1))  # (B, fc_dim, num_node, 1)
 
-        # Interpolated back to original point
-        output_fea = point_utils.upsample_inter(input_loc, node_loc, input_fea, node_fea, k=3).unsqueeze(3)
-
-        return output_fea, node_fea, node_offset
+        return fpoint_fea, node_fea, fpoint_loc_trans  # (raw features, transformed features, offset locations)
 
